@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -28,6 +28,20 @@ interface Transaction {
   profiles: { email: string; full_name: string | null };
 }
 
+const formatAmount = (amount: number, currency?: string | null) => {
+  const normalizedCurrency = currency?.toUpperCase() || "USD";
+  const fractionDigits = normalizedCurrency === "BTC" ? 8 : 2;
+  const formattedAmount = amount.toLocaleString("en-US", {
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits,
+  });
+
+  if (normalizedCurrency === "USD") return `$${formattedAmount}`;
+  if (normalizedCurrency === "BTC") return `₿${formattedAmount}`;
+  if (normalizedCurrency === "USDT") return `USDT ${formattedAmount}`;
+  return `${normalizedCurrency} ${formattedAmount}`;
+};
+
 const AdminTransactions = () => {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
@@ -42,29 +56,6 @@ const AdminTransactions = () => {
 
   useEffect(() => { fetchTransactions(); }, []);
 
-  const formatAmount = (amount: number, currency: string) => {
-    const normalizedCurrency = currency?.toUpperCase() || "USD";
-    const fractionDigits = normalizedCurrency === "BTC" ? 8 : 2;
-    const formattedAmount = amount.toLocaleString(undefined, {
-      minimumFractionDigits: fractionDigits,
-      maximumFractionDigits: fractionDigits,
-    });
-
-    if (normalizedCurrency === "USD") return `$${formattedAmount}`;
-    if (normalizedCurrency === "BTC") return `₿${formattedAmount}`;
-    if (normalizedCurrency === "USDT") return `USDT ${formattedAmount}`;
-    return `${normalizedCurrency} ${formattedAmount}`;
-  };
-
-  const sumApprovedByTypeAndCurrency = (type: "deposit" | "withdrawal") =>
-    transactions
-      .filter((tx) => tx.type === type && tx.status === "approved")
-      .reduce((acc, tx) => {
-        const currency = tx.currency?.toUpperCase() || "USD";
-        acc[currency] = (acc[currency] || 0) + tx.amount;
-        return acc;
-      }, {} as Record<string, number>);
-
   const fetchTransactions = async () => {
     try {
       const { data, error } = await supabase.from("transactions").select(`*, profiles!transactions_user_id_fkey(email, full_name)`).order("created_at", { ascending: false }).limit(500);
@@ -75,18 +66,38 @@ const AdminTransactions = () => {
     } finally { setLoading(false); }
   };
 
-  const filteredTransactions = transactions.filter(tx => {
-    const matchesSearch = !searchTerm || tx.profiles?.email?.toLowerCase().includes(searchTerm.toLowerCase()) || tx.profiles?.full_name?.toLowerCase().includes(searchTerm.toLowerCase()) || tx.amount.toString().includes(searchTerm);
+  const filteredTransactions = useMemo(() => transactions.filter(tx => {
+    const normalizedSearchTerm = searchTerm.toLowerCase();
+    const matchesSearch = !searchTerm ||
+      tx.profiles?.email?.toLowerCase().includes(normalizedSearchTerm) ||
+      tx.profiles?.full_name?.toLowerCase().includes(normalizedSearchTerm) ||
+      tx.amount.toString().includes(normalizedSearchTerm);
     const matchesType = typeFilter === "all" || tx.type === typeFilter;
     const matchesStatus = statusFilter === "all" || tx.status === statusFilter;
     return matchesSearch && matchesType && matchesStatus;
-  });
+  }), [transactions, searchTerm, typeFilter, statusFilter]);
 
-  const stats = {
-    totalDepositsByCurrency: sumApprovedByTypeAndCurrency("deposit"),
-    totalWithdrawalsByCurrency: sumApprovedByTypeAndCurrency("withdrawal"),
-    pendingCount: transactions.filter(tx => tx.status === "pending").length,
-  };
+  const stats = useMemo(() => {
+    const sumApprovedByTypeAndCurrency = (type: "deposit" | "withdrawal") =>
+      transactions
+        .filter((tx) => tx.type === type && tx.status === "approved")
+        .reduce((acc, tx) => {
+          const currency = tx.currency?.toUpperCase() || "USD";
+          acc[currency] = (acc[currency] || 0) + tx.amount;
+          return acc;
+        }, {} as Record<string, number>);
+
+    const totalDepositsByCurrency = sumApprovedByTypeAndCurrency("deposit");
+    const totalWithdrawalsByCurrency = sumApprovedByTypeAndCurrency("withdrawal");
+
+    return {
+      totalDepositsByCurrency,
+      totalWithdrawalsByCurrency,
+      pendingCount: transactions.filter(tx => tx.status === "pending").length,
+      sortedDepositTotals: Object.entries(totalDepositsByCurrency).sort(([a], [b]) => a.localeCompare(b)),
+      sortedWithdrawalTotals: Object.entries(totalWithdrawalsByCurrency).sort(([a], [b]) => a.localeCompare(b)),
+    };
+  }, [transactions]);
 
   if (loading) {
     return <div className="flex items-center justify-center min-h-[400px]"><div className="animate-pulse text-muted-foreground">{t('admin.transactions.loading')}</div></div>;
@@ -104,9 +115,9 @@ const AdminTransactions = () => {
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm text-muted-foreground">{t('admin.transactions.totalApprovedDeposits')}</CardTitle></CardHeader>
           <CardContent>
-            {Object.entries(stats.totalDepositsByCurrency).length > 0 ? (
+            {stats.sortedDepositTotals.length > 0 ? (
               <div className="space-y-1">
-                {Object.entries(stats.totalDepositsByCurrency).sort(([a], [b]) => a.localeCompare(b)).map(([currency, amount]) => (
+                {stats.sortedDepositTotals.map(([currency, amount]) => (
                   <p key={currency} className="text-2xl font-bold text-green-600">{formatAmount(amount, currency)}</p>
                 ))}
               </div>
@@ -118,9 +129,9 @@ const AdminTransactions = () => {
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm text-muted-foreground">{t('admin.transactions.totalApprovedWithdrawals')}</CardTitle></CardHeader>
           <CardContent>
-            {Object.entries(stats.totalWithdrawalsByCurrency).length > 0 ? (
+            {stats.sortedWithdrawalTotals.length > 0 ? (
               <div className="space-y-1">
-                {Object.entries(stats.totalWithdrawalsByCurrency).sort(([a], [b]) => a.localeCompare(b)).map(([currency, amount]) => (
+                {stats.sortedWithdrawalTotals.map(([currency, amount]) => (
                   <p key={currency} className="text-2xl font-bold text-red-600">{formatAmount(amount, currency)}</p>
                 ))}
               </div>
