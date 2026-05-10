@@ -42,6 +42,29 @@ const AdminTransactions = () => {
 
   useEffect(() => { fetchTransactions(); }, []);
 
+  const formatAmount = (amount: number, currency: string) => {
+    const normalizedCurrency = currency?.toUpperCase() || "USD";
+    const fractionDigits = normalizedCurrency === "BTC" ? 8 : 2;
+    const formattedAmount = amount.toLocaleString(undefined, {
+      minimumFractionDigits: fractionDigits,
+      maximumFractionDigits: fractionDigits,
+    });
+
+    if (normalizedCurrency === "USD") return `$${formattedAmount}`;
+    if (normalizedCurrency === "BTC") return `₿${formattedAmount}`;
+    if (normalizedCurrency === "USDT") return `USDT ${formattedAmount}`;
+    return `${normalizedCurrency} ${formattedAmount}`;
+  };
+
+  const sumApprovedByTypeAndCurrency = (type: "deposit" | "withdrawal") =>
+    transactions
+      .filter((tx) => tx.type === type && tx.status === "approved")
+      .reduce((acc, tx) => {
+        const currency = tx.currency?.toUpperCase() || "USD";
+        acc[currency] = (acc[currency] || 0) + tx.amount;
+        return acc;
+      }, {} as Record<string, number>);
+
   const fetchTransactions = async () => {
     try {
       const { data, error } = await supabase.from("transactions").select(`*, profiles!transactions_user_id_fkey(email, full_name)`).order("created_at", { ascending: false }).limit(500);
@@ -60,8 +83,8 @@ const AdminTransactions = () => {
   });
 
   const stats = {
-    totalDeposits: transactions.filter(tx => tx.type === "deposit" && tx.status === "approved").reduce((sum, tx) => sum + tx.amount, 0),
-    totalWithdrawals: transactions.filter(tx => tx.type === "withdrawal" && tx.status === "approved").reduce((sum, tx) => sum + tx.amount, 0),
+    totalDepositsByCurrency: sumApprovedByTypeAndCurrency("deposit"),
+    totalWithdrawalsByCurrency: sumApprovedByTypeAndCurrency("withdrawal"),
     pendingCount: transactions.filter(tx => tx.status === "pending").length,
   };
 
@@ -80,11 +103,31 @@ const AdminTransactions = () => {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm text-muted-foreground">{t('admin.transactions.totalApprovedDeposits')}</CardTitle></CardHeader>
-          <CardContent><p className="text-2xl font-bold text-green-600">${stats.totalDeposits.toLocaleString()}</p></CardContent>
+          <CardContent>
+            {Object.entries(stats.totalDepositsByCurrency).length > 0 ? (
+              <div className="space-y-1">
+                {Object.entries(stats.totalDepositsByCurrency).sort(([a], [b]) => a.localeCompare(b)).map(([currency, amount]) => (
+                  <p key={currency} className="text-2xl font-bold text-green-600">{formatAmount(amount, currency)}</p>
+                ))}
+              </div>
+            ) : (
+              <p className="text-2xl font-bold text-green-600">{formatAmount(0, "USD")}</p>
+            )}
+          </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm text-muted-foreground">{t('admin.transactions.totalApprovedWithdrawals')}</CardTitle></CardHeader>
-          <CardContent><p className="text-2xl font-bold text-red-600">${stats.totalWithdrawals.toLocaleString()}</p></CardContent>
+          <CardContent>
+            {Object.entries(stats.totalWithdrawalsByCurrency).length > 0 ? (
+              <div className="space-y-1">
+                {Object.entries(stats.totalWithdrawalsByCurrency).sort(([a], [b]) => a.localeCompare(b)).map(([currency, amount]) => (
+                  <p key={currency} className="text-2xl font-bold text-red-600">{formatAmount(amount, currency)}</p>
+                ))}
+              </div>
+            ) : (
+              <p className="text-2xl font-bold text-red-600">{formatAmount(0, "USD")}</p>
+            )}
+          </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm text-muted-foreground">{t('admin.transactions.pendingTransactions')}</CardTitle></CardHeader>
@@ -147,7 +190,7 @@ const AdminTransactions = () => {
                       </div>
                     </TableCell>
                     <TableCell><div><p className="font-medium">{tx.profiles?.full_name || "N/A"}</p><p className="text-xs text-muted-foreground">{tx.profiles?.email}</p></div></TableCell>
-                    <TableCell className="font-semibold">${tx.amount.toLocaleString()}</TableCell>
+                    <TableCell className="font-semibold">{formatAmount(tx.amount, tx.currency)}</TableCell>
                     <TableCell className="uppercase">{tx.currency}</TableCell>
                     <TableCell><Badge className={tx.status === "approved" ? "bg-green-500" : tx.status === "pending" ? "bg-yellow-500" : "bg-red-500"}>{tx.status}</Badge></TableCell>
                     <TableCell>{format(new Date(tx.created_at), "MMM dd, yyyy HH:mm")}</TableCell>
